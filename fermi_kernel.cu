@@ -53,8 +53,8 @@ template <int ALGO, int TEX_DIM> __global__ void fermi_scrypt_core_kernelB_LG_te
 __constant__ uint32_t* c_V[TOTAL_WARP_LIMIT];
 
 // using texture references for the "tex" variants of the B kernels
-texture<uint4, 1, cudaReadModeElementType> texRef1D_4_V;
-texture<uint4, 2, cudaReadModeElementType> texRef2D_4_V;
+//texture<uint4, 1, cudaReadModeElementType> texRef1D_4_V;
+//texture<uint4, 2, cudaReadModeElementType> texRef2D_4_V;
 
 FermiKernel::FermiKernel() : KernelInterface()
 {
@@ -63,38 +63,66 @@ FermiKernel::FermiKernel() : KernelInterface()
 bool FermiKernel::bindtexture_1D(uint32_t *d_V, size_t size)
 {
     cudaChannelFormatDesc channelDesc4 = cudaCreateChannelDesc<uint4>();
-    texRef1D_4_V.normalized = 0;
-    texRef1D_4_V.filterMode = cudaFilterModePoint;
-    texRef1D_4_V.addressMode[0] = cudaAddressModeClamp;
-    checkCudaErrors(cudaBindTexture(NULL, &texRef1D_4_V, d_V, &channelDesc4, size));
+    struct cudaTextureDesc texRef1D_4_VDesc;
+    memset(&texRef1D_4_VDesc, 0, sizeof(struct cudaTextureDesc));
+    texRef1D_4_VDesc.normalizedCoords = 0;
+    texRef1D_4_VDesc.filterMode = cudaFilterModePoint;
+    texRef1D_4_VDesc.addressMode[0] = cudaAddressModeClamp;
+    texRef1D_4_VDesc.readMode = cudaReadModeElementType;
+
+    struct cudaResourceDesc res1Desc;
+    memset(&res1Desc, 0, sizeof(res1Desc));
+    res1Desc.resType = cudaResourceTypeLinear;
+    res1Desc.res.linear.devPtr = d_V;
+    res1Desc.res.linear.desc = channelDesc4;
+    res1Desc.res.linear.sizeInBytes = size;
+
+    checkCudaErrors(cudaCreateTextureObject(&texRef1D_4_V, &res1Desc, &texRef1D_4_VDesc, NULL));
+
+    //checkCudaErrors(cudaBindTexture(NULL, &texRef1D_4_V, d_V, &channelDesc4, size));
+    return true;
+}
+
+bool FermiKernel::unbindtexture_1D()
+{
+    checkCudaErrors(cudaDestroyTextureObject(texRef1D_4_V));
     return true;
 }
 
 bool FermiKernel::bindtexture_2D(uint32_t *d_V, int width, int height, size_t pitch)
 {
     cudaChannelFormatDesc channelDesc4 = cudaCreateChannelDesc<uint4>();
-    texRef2D_4_V.normalized = 0;
-    texRef2D_4_V.filterMode = cudaFilterModePoint;
-    texRef2D_4_V.addressMode[0] = cudaAddressModeClamp;
-    texRef2D_4_V.addressMode[1] = cudaAddressModeClamp;
     // maintain texture width of TEXWIDTH (max. limit is 65000)
     while (width > TEXWIDTH) { width /= 2; height *= 2; pitch /= 2; }
     while (width < TEXWIDTH) { width *= 2; height = (height+1)/2; pitch *= 2; }
 //    fprintf(stderr, "total size: %u, %u bytes\n", pitch * height, width * sizeof(uint32_t) * 4 * height);
 //    fprintf(stderr, "binding width width=%d, height=%d, pitch=%d\n", width, height,pitch);
-    checkCudaErrors(cudaBindTexture2D(NULL, &texRef2D_4_V, d_V, &channelDesc4, width, height, pitch));
-    return true;
-}
 
-bool FermiKernel::unbindtexture_1D()
-{
-    checkCudaErrors(cudaUnbindTexture(texRef1D_4_V));
+    struct cudaTextureDesc texRef2D_4_VDesc;
+    memset(&texRef2D_4_VDesc, 0, sizeof(struct cudaTextureDesc));
+    texRef2D_4_VDesc.normalizedCoords = 0;
+    texRef2D_4_VDesc.filterMode = cudaFilterModePoint;
+    texRef2D_4_VDesc.addressMode[0] = cudaAddressModeClamp;
+    texRef2D_4_VDesc.addressMode[1] = cudaAddressModeClamp;
+    texRef2D_4_VDesc.readMode = cudaReadModeElementType;
+
+    cudaMallocArray(&cuArray, &channelDesc4, width, height);
+    cudaMemcpy2DToArray(cuArray, 0, 0, d_V, pitch, width * sizeof(uint32_t), height, cudaMemcpyDeviceToDevice);
+
+    struct cudaResourceDesc res2Desc;
+    memset(&res2Desc, 0, sizeof(res2Desc));
+    res2Desc.resType = cudaResourceTypeArray;
+    res2Desc.res.array.array = cuArray;
+
+    checkCudaErrors(cudaCreateTextureObject(&texRef2D_4_V, &res2Desc, &texRef2D_4_VDesc, NULL));
+    //checkCudaErrors(cudaBindTexture2D(NULL, &texRef2D_4_V, d_V, &channelDesc4, width, height, pitch));
     return true;
 }
 
 bool FermiKernel::unbindtexture_2D()
 {
-    checkCudaErrors(cudaUnbindTexture(texRef2D_4_V));
+    checkCudaErrors(cudaDestroyTextureObject(texRef2D_4_V));
+    cudaFreeArray(cuArray);
     return true;
 }
 
@@ -596,7 +624,7 @@ fermi_scrypt_core_kernelB(uint32_t *g_odata, unsigned int N)
 }
 
 template <int ALGO, int TEX_DIM> __global__ void
-fermi_scrypt_core_kernelB_tex(uint32_t *g_odata, unsigned int N)
+fermi_scrypt_core_kernelB_tex(cudaTextureObject_t texRef1D_4_V, cudaTextureObject_t texRef2D_4_V,  uint32_t *g_odata, unsigned int N)
 {
     extern __shared__ unsigned char x[];
     uint32_t ((*X)[WU_PER_WARP][16+4]) = (uint32_t (*)[WU_PER_WARP][16+4]) x;
@@ -623,16 +651,16 @@ fermi_scrypt_core_kernelB_tex(uint32_t *g_odata, unsigned int N)
 #pragma unroll 4
     for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + (N-1)*32 + Z)/4;
         *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                    tex1Dfetch(texRef1D_4_V, loc) :
-                    tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                    tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                    tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
     for (int idx=0; idx < 4; idx++) B[idx] = *((uint4*)&XX[4*idx]);
 
 #pragma unroll 4
     for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + (N-1)*32 + 16+Z)/4;
         *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                    tex1Dfetch(texRef1D_4_V, loc) :
-                    tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                    tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                    tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
     for (int idx=0; idx < 4; idx++) C[idx] = *((uint4*)&XX[4*idx]);
 
@@ -648,16 +676,16 @@ fermi_scrypt_core_kernelB_tex(uint32_t *g_odata, unsigned int N)
 #pragma unroll 4
         for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + XB[wu][16-Z] + Z)/4;
             *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                        tex1Dfetch(texRef1D_4_V, loc) :
-                        tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                        tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                        tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
         for (int idx=0; idx < 4; idx++) B[idx] ^= *((uint4*)&XX[4*idx]);
 
 #pragma unroll 4
         for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + XB[wu][16-Z] + 16+Z)/4;
             *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                        tex1Dfetch(texRef1D_4_V, loc) :
-                        tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                        tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                        tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
         for (int idx=0; idx < 4; idx++) C[idx] ^= *((uint4*)&XX[4*idx]);
 
@@ -839,7 +867,7 @@ fermi_scrypt_core_kernelB_LG(uint32_t *g_odata, unsigned int N, unsigned int LOO
 }
 
 template <int ALGO, int TEX_DIM> __global__ void
-fermi_scrypt_core_kernelB_LG_tex(uint32_t *g_odata, unsigned int N, unsigned int LOOKUP_GAP)
+fermi_scrypt_core_kernelB_LG_tex(cudaTextureObject_t texRef1D_4_V, cudaTextureObject_t texRef2D_4_V, uint32_t *g_odata, unsigned int N, unsigned int LOOKUP_GAP)
 {
     extern __shared__ unsigned char x[];
     uint32_t ((*X)[WU_PER_WARP][16+4]) = (uint32_t (*)[WU_PER_WARP][16+4]) x;
@@ -866,16 +894,16 @@ fermi_scrypt_core_kernelB_LG_tex(uint32_t *g_odata, unsigned int N, unsigned int
 #pragma unroll 4
     for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + pos*32 + Z)/4;
         *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                    tex1Dfetch(texRef1D_4_V, loc) :
-                    tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                    tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                    tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
     for (int idx=0; idx < 4; idx++) B[idx] = *((uint4*)&XX[4*idx]);
 
 #pragma unroll 4
     for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + pos*32 + 16+Z)/4;
         *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                    tex1Dfetch(texRef1D_4_V, loc) :
-                    tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                    tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                    tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
     for (int idx=0; idx < 4; idx++) C[idx] = *((uint4*)&XX[4*idx]);
 
@@ -895,16 +923,16 @@ fermi_scrypt_core_kernelB_LG_tex(uint32_t *g_odata, unsigned int N, unsigned int
 #pragma unroll 4
         for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + XB[wu][16-Z] + Z)/4;
             *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                        tex1Dfetch(texRef1D_4_V, loc) :
-                        tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                        tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                        tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
         for (int idx=0; idx < 4; idx++) b[idx] = *((uint4*)&XX[4*idx]);
 
 #pragma unroll 4
         for (int wu=0; wu < 32; wu+=8) { unsigned int loc = (SCRATCH*(offset+wu+Y) + XB[wu][16-Z] + 16+Z)/4;
             *((uint4*)XB[wu]) = ((TEX_DIM == 1) ?
-                        tex1Dfetch(texRef1D_4_V, loc) :
-                        tex2D(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
+                        tex1Dfetch<uint4>(texRef1D_4_V, loc) :
+                        tex2D<uint4>(texRef2D_4_V, 0.5f + (loc%TEXWIDTH), 0.5f + (loc/TEXWIDTH))); }
 #pragma unroll 4
         for (int idx=0; idx < 4; idx++) c[idx] = *((uint4*)&XX[4*idx]);
 

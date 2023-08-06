@@ -147,16 +147,12 @@ KernelInterface *Best_Kernel_Heuristics(cudaDeviceProp *props)
             kernel = new NV2Kernel(); // we don't want this for Keccak though
         else if (props->major == 3 && props->minor == 0)
             kernel = new NVKernel();
-        else if (props->major == 2 || props->major == 1)
-            kernel = new FermiKernel();
     }
     else
     {
        // low register count kernels (high N-factor scrypt-jane)
        if (props->major > 3 || (props->major == 3 && props->minor >= 5))
             kernel = new TitanKernel();
-        else if (props->major == 3 && props->minor == 0)
-            kernel = new KeplerKernel();
         else if (props->major == 2 || props->major == 1)
             kernel = new TestKernel();
     }
@@ -188,8 +184,6 @@ bool validate_config(char *config, int &b, int &w, KernelInterface **kernel = NU
                 case 'T': case 'Z': *kernel = new NV2Kernel(); break;
                 case 't':           *kernel = new TitanKernel(); break;
                 case 'K': case 'Y': *kernel = new NVKernel(); break;
-                case 'k':           *kernel = new KeplerKernel(); break;
-                case 'F': case 'L': *kernel = new FermiKernel(); break;
                 case 'f': case 'X': *kernel = new TestKernel(); break;
                 case ' ': // choose based on device architecture
                     *kernel = Best_Kernel_Heuristics(props);
@@ -409,10 +403,6 @@ int find_optimal_blockcount(int thr_id, KernelInterface* &kernel, bool &concurre
                 kernel = new TitanKernel();
             else if (device_config[thr_id][0] == 'K' || device_config[thr_id][0] == 'Y')
                 kernel = new NVKernel();
-            else if (device_config[thr_id][0] == 'k')
-                kernel = new KeplerKernel();
-            else if (device_config[thr_id][0] == 'F' || device_config[thr_id][0] == 'L')
-                kernel = new FermiKernel();
             else if (device_config[thr_id][0] == 'f' || device_config[thr_id][0] == 'X')
                 kernel = new TestKernel();
         }
@@ -1129,3 +1119,6 @@ static void xor_salsa8(uint32_t * const B, const uint32_t * const C)
     B[ 8] += x8; B[ 9] += x9; B[10] += xa; B[11] += xb; B[12] += xc; B[13] += xd; B[14] += xe; B[15] += xf;
 }
 
+cudaTextureObject_t texRef1D_4_V = 0;
+cudaTextureObject_t texRef2D_4_V = 0;
+cudaArray_t cuArray;

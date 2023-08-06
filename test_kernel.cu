@@ -48,8 +48,9 @@ __constant__ uint32_t c_SCRATCH_WU_PER_WARP;   // (SCRATCH * WU_PER_WARP)
 __constant__ uint32_t c_SCRATCH_WU_PER_WARP_1; // (SCRATCH * WU_PER_WARP) - 1
 
 // using texture references for the "tex" variants of the B kernels
-texture<uint4, 1, cudaReadModeElementType> texRef1D_4_V;
-texture<uint4, 2, cudaReadModeElementType> texRef2D_4_V;
+extern cudaTextureObject_t texRef1D_4_V;
+extern cudaTextureObject_t texRef2D_4_V;
+extern cudaArray_t cuArray;
 
 template <int ALGO> __device__  __forceinline__ void block_mixer(uint4 &b, uint4 &bx, const int x1, const int x2, const int x3);
 
@@ -119,7 +120,7 @@ template <MemoryAccess SCHEME> __device__ __forceinline__ void write_keys_direct
   }
 }
 
-template <MemoryAccess SCHEME, int TEX_DIM> __device__  __forceinline__ void read_keys_direct(uint4 &b, uint4 &bx, uint32_t start) {
+template <MemoryAccess SCHEME, int TEX_DIM> __device__  __forceinline__ void read_keys_direct(cudaTextureObject_t texRef1D_4_V, cudaTextureObject_t texRef2D_4_V, uint4 &b, uint4 &bx, uint32_t start) {
 
   uint32_t *scratch;
   if (TEX_DIM == 0) scratch = c_V[(blockIdx.x*blockDim.x + threadIdx.x)/32];
@@ -134,11 +135,11 @@ template <MemoryAccess SCHEME, int TEX_DIM> __device__  __forceinline__ void rea
         b  = *((uint4 *)(&scratch[c ? t2_start : start]));
         bx = *((uint4 *)(&scratch[c ? start : t2_start]));
     } else if (TEX_DIM == 1) {
-        b  = tex1Dfetch(texRef1D_4_V, c ? t2_start : start);
-        bx = tex1Dfetch(texRef1D_4_V, c ? start : t2_start);
+        b  = tex1Dfetch<uint4>(texRef1D_4_V, c ? t2_start : start);
+        bx = tex1Dfetch<uint4>(texRef1D_4_V, c ? start : t2_start);
     } else if (TEX_DIM == 2) {
-        b  = tex2D(texRef2D_4_V, 0.5f + ((c ? t2_start : start)%TEXWIDTH), 0.5f + ((c ? t2_start : start)/TEXWIDTH));
-        bx = tex2D(texRef2D_4_V, 0.5f + ((c ? start : t2_start)%TEXWIDTH), 0.5f + ((c ? start : t2_start)/TEXWIDTH));
+        b  = tex2D<uint4>(texRef2D_4_V, 0.5f + ((c ? t2_start : start)%TEXWIDTH), 0.5f + ((c ? t2_start : start)/TEXWIDTH));
+        bx = tex2D<uint4>(texRef2D_4_V, 0.5f + ((c ? start : t2_start)%TEXWIDTH), 0.5f + ((c ? start : t2_start)/TEXWIDTH));
     }
     uint4 temp = b; b = (c ? bx : b); bx = (c ? temp : bx);
     uint32_t *st = &tmp[threadIdx.x/32][(threadIdx.x + 28)%32];
@@ -148,11 +149,11 @@ template <MemoryAccess SCHEME, int TEX_DIM> __device__  __forceinline__ void rea
     *s = bx.w; bx.w = *st;
   } else {
          if (TEX_DIM == 0) b = *((uint4 *)(&scratch[start]));
-    else if (TEX_DIM == 1) b = tex1Dfetch(texRef1D_4_V, start/4);
-    else if (TEX_DIM == 2) b = tex2D(texRef2D_4_V, 0.5f + ((start/4)%TEXWIDTH), 0.5f + ((start/4)/TEXWIDTH));
+    else if (TEX_DIM == 1) b = tex1Dfetch<uint4>(texRef1D_4_V, start/4);
+    else if (TEX_DIM == 2) b = tex2D<uint4>(texRef2D_4_V, 0.5f + ((start/4)%TEXWIDTH), 0.5f + ((start/4)/TEXWIDTH));
          if (TEX_DIM == 0) bx = *((uint4 *)(&scratch[start+16]));
-    else if (TEX_DIM == 1) bx = tex1Dfetch(texRef1D_4_V, (start+16)/4);
-    else if (TEX_DIM == 2) bx = tex2D(texRef2D_4_V, 0.5f + (((start+16)/4)%TEXWIDTH), 0.5f + (((start+16)/4)/TEXWIDTH));
+    else if (TEX_DIM == 1) bx = tex1Dfetch<uint4>(texRef1D_4_V, (start+16)/4);
+    else if (TEX_DIM == 2) bx = tex2D<uint4>(texRef2D_4_V, 0.5f + (((start+16)/4)%TEXWIDTH), 0.5f + (((start+16)/4)/TEXWIDTH));
   }
 }
 
@@ -519,7 +520,7 @@ template <int ALGO> __device__  __forceinline__ void block_mixer(uint4 &b, uint4
  * and similarly for kx.
  */
 
-template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernelA(const uint32_t *d_idata, int begin, int end) {
+template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernelA(cudaTextureObject_t texRef1D_4_V, cudaTextureObject_t texRef2D_4_V, const uint32_t *d_idata, int begin, int end) {
 
   uint4 b, bx;
 
@@ -536,7 +537,7 @@ template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernel
     load_key<ALGO>(d_idata, b, bx);
     write_keys_direct<SCHEME>(b, bx, start);
     ++i;
-  } else read_keys_direct<SCHEME,0>(b, bx, start+32*(i-1));
+  } else read_keys_direct<SCHEME,0>(texRef1D_4_V, texRef2D_4_V, b, bx, start+32*(i-1));
   
   while (i < end) {
     block_mixer<ALGO>(b, bx, x1, x2, x3);
@@ -545,7 +546,7 @@ template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernel
   }
 }
 
-template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernelA_LG(const uint32_t *d_idata, int begin, int end, unsigned int LOOKUP_GAP) {
+template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernelA_LG(cudaTextureObject_t texRef1D_4_V, cudaTextureObject_t texRef2D_4_V, const uint32_t *d_idata, int begin, int end, unsigned int LOOKUP_GAP) {
 
   uint4 b, bx;
 
@@ -564,7 +565,7 @@ template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernel
     ++i;
   } else {
     int pos = (i-1)/LOOKUP_GAP, loop = (i-1)-pos*LOOKUP_GAP;
-    read_keys_direct<SCHEME,0>(b, bx, start+32*pos);
+    read_keys_direct<SCHEME,0>(texRef1D_4_V, texRef2D_4_V, b, bx, start+32*pos);
     while(loop--) block_mixer<ALGO>(b, bx, x1, x2, x3);
   }
   
@@ -583,7 +584,7 @@ template <int ALGO, MemoryAccess SCHEME> __global__ void test_scrypt_core_kernel
  * the scratch buffer in pseudorandom order, mixing the key as it goes.
  */
 
-template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scrypt_core_kernelB(uint32_t *d_odata, int begin, int end) {
+template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scrypt_core_kernelB(cudaTextureObject_t texRef1D_4_V, cudaTextureObject_t texRef2D_4_V, uint32_t *d_odata, int begin, int end) {
 
   extern __shared__ unsigned char shared[];
   uint32_t (*tmp)[32+1] = (uint32_t (*)[32+1])(shared);
@@ -599,14 +600,14 @@ template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scryp
   int x3 = (threadIdx.x & 0x1c) + (((threadIdx.x & 0x03)+3)&0x3);
 
   if (begin == 0) {
-    read_keys_direct<SCHEME,TEX_DIM>(b, bx, start+32*c_N_1);
+    read_keys_direct<SCHEME,TEX_DIM>(texRef1D_4_V, texRef2D_4_V, b, bx, start+32*c_N_1);
     block_mixer<ALGO>(b, bx, x1, x2, x3);
   } else load_key<ALGO>(d_odata, b, bx);
 
   for (int i = begin; i < end; i++) {
     tmp[threadIdx.x/32][threadIdx.x%32] = bx.x;
     int j = (tmp[threadIdx.x/32][(threadIdx.x & 0x1c)] & (c_N_1));
-    uint4 t, tx; read_keys_direct<SCHEME,TEX_DIM>(t, tx, start+32*j);
+    uint4 t, tx; read_keys_direct<SCHEME,TEX_DIM>(texRef1D_4_V, texRef2D_4_V, t, tx, start+32*j);
     b ^= t; bx ^= tx;
     block_mixer<ALGO>(b, bx, x1, x2, x3);
   }
@@ -614,7 +615,7 @@ template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scryp
   store_key<ALGO>(d_odata, b, bx);
 }
 
-template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scrypt_core_kernelB_LG(uint32_t *d_odata, int begin, int end, unsigned int LOOKUP_GAP) {
+template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scrypt_core_kernelB_LG(cudaTextureObject_t texRef1D_4_V, cudaTextureObject_t texRef2D_4_V, uint32_t *d_odata, int begin, int end, unsigned int LOOKUP_GAP) {
 
   extern __shared__ unsigned char shared[];
   uint32_t (*tmp)[32+1] = (uint32_t (*)[32+1])(shared);
@@ -631,7 +632,7 @@ template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scryp
 
   if (begin == 0) {
     int pos = c_N_1/LOOKUP_GAP, loop = 1 + (c_N_1-pos*LOOKUP_GAP);
-    read_keys_direct<SCHEME,TEX_DIM>(b, bx, start+32*pos);
+    read_keys_direct<SCHEME,TEX_DIM>(texRef1D_4_V, texRef2D_4_V,b, bx, start+32*pos);
     while(loop--) block_mixer<ALGO>(b, bx, x1, x2, x3);
   } else load_key<ALGO>(d_odata, b, bx);
 
@@ -639,7 +640,7 @@ template <int ALGO, MemoryAccess SCHEME, int TEX_DIM> __global__ void test_scryp
     tmp[threadIdx.x/32][threadIdx.x%32] = bx.x;
     int j = (tmp[threadIdx.x/32][(threadIdx.x & 0x1c)] & (c_N_1));
     int pos = j/LOOKUP_GAP, loop = j-pos*LOOKUP_GAP;
-    uint4 t, tx; read_keys_direct<SCHEME,TEX_DIM>(t, tx, start+32*pos);
+    uint4 t, tx; read_keys_direct<SCHEME,TEX_DIM>(texRef1D_4_V, texRef2D_4_V, t, tx, start+32*pos);
     while(loop--) block_mixer<ALGO>(t, tx, x1, x2, x3);
     b ^= t; bx ^= tx;
     block_mixer<ALGO>(b, bx, x1, x2, x3);
@@ -656,36 +657,60 @@ TestKernel::TestKernel() : KernelInterface()
 bool TestKernel::bindtexture_1D(uint32_t *d_V, size_t size)
 {
     cudaChannelFormatDesc channelDesc4 = cudaCreateChannelDesc<uint4>();
-    texRef1D_4_V.normalized = 0;
-    texRef1D_4_V.filterMode = cudaFilterModePoint;
-    texRef1D_4_V.addressMode[0] = cudaAddressModeClamp;
-    checkCudaErrors(cudaBindTexture(NULL, &texRef1D_4_V, d_V, &channelDesc4, size));
+    struct cudaTextureDesc texRef1D_4_VDesc;
+    memset(&texRef1D_4_VDesc, 0, sizeof(struct cudaTextureDesc));
+    texRef1D_4_VDesc.normalizedCoords = 0;
+    texRef1D_4_VDesc.filterMode = cudaFilterModePoint;
+    texRef1D_4_VDesc.addressMode[0] = cudaAddressModeClamp;
+    texRef1D_4_VDesc.readMode = cudaReadModeElementType;
+
+    struct cudaResourceDesc res1Desc;
+    memset(&res1Desc, 0, sizeof(res1Desc));
+    res1Desc.resType = cudaResourceTypeLinear;
+    res1Desc.res.linear.devPtr = d_V;
+    res1Desc.res.linear.desc = channelDesc4;
+    res1Desc.res.linear.sizeInBytes = size;
+
+    checkCudaErrors(cudaCreateTextureObject(&texRef1D_4_V, &res1Desc, &texRef1D_4_VDesc, NULL));
     return true;
 }
 
 bool TestKernel::bindtexture_2D(uint32_t *d_V, int width, int height, size_t pitch)
 {
     cudaChannelFormatDesc channelDesc4 = cudaCreateChannelDesc<uint4>();
-    texRef2D_4_V.normalized = 0;
-    texRef2D_4_V.filterMode = cudaFilterModePoint;
-    texRef2D_4_V.addressMode[0] = cudaAddressModeClamp;
-    texRef2D_4_V.addressMode[1] = cudaAddressModeClamp;
-    // maintain texture width of TEXWIDTH (max. limit is 65000)
     while (width > TEXWIDTH) { width /= 2; height *= 2; pitch /= 2; }
     while (width < TEXWIDTH) { width *= 2; height = (height+1)/2; pitch *= 2; }
-    checkCudaErrors(cudaBindTexture2D(NULL, &texRef2D_4_V, d_V, &channelDesc4, width, height, pitch));
+
+    struct cudaTextureDesc texRef2D_4_VDesc;
+    memset(&texRef2D_4_VDesc, 0, sizeof(struct cudaTextureDesc));
+    texRef2D_4_VDesc.normalizedCoords = 0;
+    texRef2D_4_VDesc.filterMode = cudaFilterModePoint;
+    texRef2D_4_VDesc.addressMode[0] = cudaAddressModeClamp;
+    texRef2D_4_VDesc.addressMode[1] = cudaAddressModeClamp;
+    texRef2D_4_VDesc.readMode = cudaReadModeElementType;
+
+    cudaMallocArray(&cuArray, &channelDesc4, width, height);
+    cudaMemcpy2DToArray(cuArray, 0, 0, d_V, pitch, width * sizeof(uint32_t), height, cudaMemcpyDeviceToDevice);
+
+    struct cudaResourceDesc res2Desc;
+    memset(&res2Desc, 0, sizeof(res2Desc));
+    res2Desc.resType = cudaResourceTypeArray;
+    res2Desc.res.array.array = cuArray;
+
+    checkCudaErrors(cudaCreateTextureObject(&texRef2D_4_V, &res2Desc, &texRef2D_4_VDesc, NULL));
     return true;
 }
 
 bool TestKernel::unbindtexture_1D()
 {
-    checkCudaErrors(cudaUnbindTexture(texRef1D_4_V));
+    checkCudaErrors(cudaDestroyTextureObject(texRef1D_4_V));
     return true;
 }
 
 bool TestKernel::unbindtexture_2D()
 {
-    checkCudaErrors(cudaUnbindTexture(texRef2D_4_V));
+    checkCudaErrors(cudaDestroyTextureObject(texRef2D_4_V));
+    cudaFreeArray(cuArray);
     return true;
 }
 
@@ -727,11 +752,11 @@ bool TestKernel::run_kernel(dim3 grid, dim3 threads, int WARPS_PER_BLOCK, int th
     do 
     {
         if (LOOKUP_GAP == 1) switch(opt_algo) {
-            case ALGO_SCRYPT:      test_scrypt_core_kernelA<ALGO_SCRYPT     , ANDERSEN><<< grid, threads, shared, stream >>>(d_idata, pos, min(pos+batch, N)); break;
-            case ALGO_SCRYPT_JANE: test_scrypt_core_kernelA<ALGO_SCRYPT_JANE, SIMPLE  ><<< grid, threads, shared, stream >>>(d_idata, pos, min(pos+batch, N)); break;
+            case ALGO_SCRYPT:      test_scrypt_core_kernelA< ALGO_SCRYPT     , ANDERSEN><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_idata, pos, min(pos+batch, N)); break;
+            case ALGO_SCRYPT_JANE: test_scrypt_core_kernelA<ALGO_SCRYPT_JANE, SIMPLE  ><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_idata, pos, min(pos+batch, N)); break;
         } else switch(opt_algo) {
-            case ALGO_SCRYPT:      test_scrypt_core_kernelA_LG<ALGO_SCRYPT     , ANDERSEN><<< grid, threads, shared, stream >>>(d_idata, pos, min(pos+batch, N), LOOKUP_GAP); break;
-            case ALGO_SCRYPT_JANE: test_scrypt_core_kernelA_LG<ALGO_SCRYPT_JANE, SIMPLE  ><<< grid, threads, shared, stream >>>(d_idata, pos, min(pos+batch, N), LOOKUP_GAP); break;
+            case ALGO_SCRYPT:      test_scrypt_core_kernelA_LG<ALGO_SCRYPT     , ANDERSEN><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_idata, pos, min(pos+batch, N), LOOKUP_GAP); break;
+            case ALGO_SCRYPT_JANE: test_scrypt_core_kernelA_LG<ALGO_SCRYPT_JANE, SIMPLE  ><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_idata, pos, min(pos+batch, N), LOOKUP_GAP); break;
         }
 
         pos += batch;
@@ -744,24 +769,24 @@ bool TestKernel::run_kernel(dim3 grid, dim3 threads, int WARPS_PER_BLOCK, int th
     {
         if (LOOKUP_GAP == 1) {
             if (texture_cache == 0) switch(opt_algo) {
-                    case ALGO_SCRYPT:      test_scrypt_core_kernelB<ALGO_SCRYPT     , ANDERSEN, 0><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N)); break;
-                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB<ALGO_SCRYPT_JANE, SIMPLE,   0><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N)); break; }
+                    case ALGO_SCRYPT:      test_scrypt_core_kernelB<ALGO_SCRYPT     , ANDERSEN, 0><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N)); break;
+                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB<ALGO_SCRYPT_JANE, SIMPLE,   0><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N)); break; }
             else if (texture_cache == 1) switch(opt_algo) {
-                    case ALGO_SCRYPT:      test_scrypt_core_kernelB<ALGO_SCRYPT     , ANDERSEN, 1><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N)); break;
-                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB<ALGO_SCRYPT_JANE, SIMPLE,   1><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N)); break; }
+                    case ALGO_SCRYPT:      test_scrypt_core_kernelB<ALGO_SCRYPT     , ANDERSEN, 1><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N)); break;
+                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB<ALGO_SCRYPT_JANE, SIMPLE,   1><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N)); break; }
             else if (texture_cache == 2) switch(opt_algo) {
-                    case ALGO_SCRYPT:      test_scrypt_core_kernelB<ALGO_SCRYPT     , ANDERSEN, 2><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N)); break;
-                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB<ALGO_SCRYPT_JANE, SIMPLE,   2><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N)); break; }
+                    case ALGO_SCRYPT:      test_scrypt_core_kernelB<ALGO_SCRYPT     , ANDERSEN, 2><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N)); break;
+                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB<ALGO_SCRYPT_JANE, SIMPLE,   2><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N)); break; }
         } else {
             if (texture_cache == 0) switch(opt_algo) {
-                    case ALGO_SCRYPT:      test_scrypt_core_kernelB_LG<ALGO_SCRYPT     , ANDERSEN, 0><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break;
-                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB_LG<ALGO_SCRYPT_JANE, SIMPLE,   0><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break; }
+                    case ALGO_SCRYPT:      test_scrypt_core_kernelB_LG<ALGO_SCRYPT     , ANDERSEN, 0><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break;
+                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB_LG<ALGO_SCRYPT_JANE, SIMPLE,   0><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break; }
             else if (texture_cache == 1) switch(opt_algo) {
-                    case ALGO_SCRYPT:      test_scrypt_core_kernelB_LG<ALGO_SCRYPT     , ANDERSEN, 1><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break;
-                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB_LG<ALGO_SCRYPT_JANE, SIMPLE,   1><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break; }
+                    case ALGO_SCRYPT:      test_scrypt_core_kernelB_LG<ALGO_SCRYPT     , ANDERSEN, 1><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break;
+                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB_LG<ALGO_SCRYPT_JANE, SIMPLE,   1><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break; }
             else if (texture_cache == 2) switch(opt_algo) {
-                    case ALGO_SCRYPT:      test_scrypt_core_kernelB_LG<ALGO_SCRYPT     , ANDERSEN, 2><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break;
-                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB_LG<ALGO_SCRYPT_JANE, SIMPLE,   2><<< grid, threads, shared, stream >>>(d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break; }
+                    case ALGO_SCRYPT:      test_scrypt_core_kernelB_LG<ALGO_SCRYPT     , ANDERSEN, 2><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break;
+                    case ALGO_SCRYPT_JANE: test_scrypt_core_kernelB_LG<ALGO_SCRYPT_JANE, SIMPLE,   2><<< grid, threads, shared, stream >>>(texRef1D_4_V, texRef2D_4_V, d_odata, pos, min(pos+batch, N), LOOKUP_GAP); break; }
         }
 
         pos += batch;
